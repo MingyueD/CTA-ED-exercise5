@@ -1,7 +1,7 @@
 ---
 title: "CTA-ED Exercise 5: Unsupervised learning (topic models)"
-author: "[Names of all group members here]"
-date: "13/03/2024"
+author: "Mingyue Deng"
+date: "17/03/2026"
 output: html_document
 ---
 ## Introduction
@@ -343,5 +343,186 @@ preText_score_plot(preText_results)
 ## Exercises
 
 1. Choose another book or set of books from Project Gutenberg
+
+```{r}
+christie <- gutenberg_download(c(65238, 69087), 
+                               meta_fields = "title")
+```
+
+I selected The Secret of Chimneys (65238) and The Murder of Roger Ackroyd (69087) by Agatha Christie from Project Gutenberg. I chose these two novels because both are detective fiction with clear chapter divisions, which makes them suitable for chapter-level topic modelling. At the same time, although they belong to the same broad genre and are written by the same author, they differ in plot, setting, and character structure, making them a useful case for testing whether topic modelling can distinguish between related but not identical texts.
+
 2. Run your own topic model on these books, changing the k of topics, and evaluating accuracy.
+
+```{r}
+# Split into chapter documents
+christie <- christie %>%
+  filter(!is.na(text))
+
+christie_chapter <- christie %>%
+  mutate(booknumber = ifelse(gutenberg_id == 65238, "Chimneys", "Ackroyd")) %>%
+  group_by(booknumber) %>%
+  mutate(chapter = ifelse(
+    booknumber == "Ackroyd",
+    cumsum(str_detect(text, regex("^\\s*chapter\\s+[ivxlcdm]+\\b", ignore_case = TRUE))),
+    cumsum(str_detect(text, regex("^\\s*\\d+\\s+[A-Za-z]", ignore_case = TRUE)))
+  )) %>%
+  ungroup() %>%
+  filter(chapter > 0) %>%
+  unite(document, booknumber, chapter, remove = FALSE)
+```
+
+```{r}
+# convert the data into a document-term matrix
+christie_chapter_word <- christie_chapter %>%
+  unnest_tokens(word, text)
+
+christie_word_counts <- christie_chapter_word %>%
+  anti_join(stop_words) %>%
+  count(document, word, sort = TRUE) %>%
+  ungroup()
+
+christie_chapters_dtm <- christie_word_counts %>%
+  cast_dtm(document, word, n)
+```
+
+```{r}
+# Change the k of topics
+christie_chapters_lda_k2 <- LDA(christie_chapters_dtm, k = 2, control = list(seed = 1234))
+christie_chapters_lda_k4 <- LDA(christie_chapters_dtm, k = 4, control = list(seed = 1234))
+```
+
+```{r}
+# Look at top terms for k = 2
+# Extract per-topic-per-word probabilities
+christie_topics_k2 <- tidy(christie_chapters_lda_k2, matrix = "beta")
+
+
+# Identify the top terms for each topic
+christie_top_terms_k2 <- christie_topics_k2 %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+# Plot the top terms for each topic
+christie_top_terms_k2 %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free", ncol = 2) +
+  scale_y_reordered() +
+  theme_tufte(base_family = "Helvetica")
+```
+
+```{r}
+# Look at top terms for k = 4
+christie_topics_k4 <- tidy(christie_chapters_lda_k4, matrix = "beta")
+
+christie_top_terms_k4 <- christie_topics_k4 %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+christie_top_terms_k4 %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free", ncol = 2) +
+  scale_y_reordered() +
+  theme_tufte(base_family = "Helvetica")
+```
+
+At the chapter level, the two-topic model separates the two novels very clearly. One topic is dominated by words such as anthony, virginia, battle, and caterham, which are strongly associated with The Secret of Chimneys. The other topic is dominated by poirot, ackroyd, caroline, ralph, and flora, which clearly correspond to The Murder of Roger Ackroyd. This suggests that the two novels have sufficiently distinct vocabularies for the model to recover the known grouping at a broad level.
+
+When k is increased to 4, the model produces more fine-grained topics. These appear to capture smaller clusters within each novel, rather than simply separating the two books. This provides additional thematic detail, but the relationship between topics and the known book-level grouping becomes less direct. For this reason, k = 2 is more suitable for evaluation, while k = 4 is more useful for interpretation.
+
+```{r}
+# Extract gamma probabilities
+christie_chapters_gamma <- tidy(christie_chapters_lda_k2, matrix = "gamma")
+
+# Separate the document name into title and chapter
+christie_chapters_gamma <- christie_chapters_gamma %>%
+  separate(document, c("title", "chapter"), sep = "_", convert = TRUE)
+
+# Classify each chapter by its most likely topic
+christie_chapter_classifications <- christie_chapters_gamma %>%
+  group_by(title, chapter) %>%
+  top_n(1, gamma) %>%
+  ungroup()
+
+# Identify the dominant topic for each book
+christie_book_topics <- christie_chapter_classifications %>%
+  count(title, topic) %>%
+  group_by(title) %>%
+  top_n(1, n) %>%
+  ungroup() %>%
+  transmute(consensus = title, topic)
+
+# Examine misclassified chapters
+christie_chapter_classifications %>%
+  inner_join(christie_book_topics, by = "topic") %>%
+  filter(title != consensus)
+```
+
+```{r}
+# Look at word-level topic assignments
+assignments <- augment(christie_chapters_lda_k2, data = christie_chapters_dtm)
+
+# Separate document names and join with consensus topics
+assignments <- assignments %>%
+  separate(document, c("title", "chapter"), sep = "_", convert = TRUE) %>%
+  inner_join(christie_book_topics, by = c(".topic" = "topic"))
+
+# Plot the percentage of word assignments
+assignments %>%
+  count(title, consensus, wt = count) %>%
+  group_by(title) %>%
+  mutate(percent = n / sum(n)) %>%
+  ggplot(aes(consensus, title, fill = percent)) +
+  geom_tile() +
+  scale_fill_gradient2(high = "red", label = percent_format()) +
+  geom_text(aes(x = consensus, y = title, label = scales::percent(percent))) +
+  theme_tufte(base_family = "Helvetica") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = "Book words assigned to",
+       y = "Book words came from",
+       fill = "% of assignments")
+```
+
+The accuracy evaluation using the two-topic model shows that the classification is very strong. Only five chapters from The Secret of Chimneys are assigned to the topic corresponding to The Murder of Roger Ackroyd, while the remaining chapters are classified consistently with their original source. The word-assignment heatmap also shows near-perfect separation: 99.67% of words from Ackroyd are assigned to its own topic, and 99.92% of words from Chimneys are assigned to its own topic. Overall, this indicates that the topic model is highly effective at recovering the known distinction between the two novels.
+
 3. Validate different pre-processing techniques using `preText` on the new book(s) of your choice. 
+
+```{r}
+library(preText)
+
+# Convert the text into a quanteda corpus
+corp <- corpus(christie, text_field = "text")
+
+# Sample documents from the corpus
+documents <- corp[sample(1:length(corp), min(1000, length(corp)))]
+print(names(documents[1:10]))
+
+# Run factorial preprocessing
+preprocessed_documents <- factorial_preprocessing(
+    documents,
+    use_ngrams = TRUE,
+    infrequent_term_threshold = 0.2,
+    verbose = FALSE)
+
+# Run the preText comparison
+preText_results <- preText(
+    preprocessed_documents,
+    dataset_name = "Agatha Christie text",
+    distance_method = "cosine",
+    num_comparisons = 20,
+    verbose = FALSE)
+
+# Plot the validation results
+preText_score_plot(preText_results)
+```
+
+The preText results suggest that this corpus is somewhat sensitive to preprocessing choices. The scores are not clustered very close to zero, and instead vary across a noticeable range, indicating that different preprocessing combinations can change document relationships to a meaningful extent. At the same time, the results are not completely erratic, since the scores form a fairly structured pattern. Overall, it suggests that preprocessing matters for this corpus, so the topic-model results should be interpreted with some caution, although the broad distinction between the two novels still appears robust.
+
