@@ -525,4 +525,3 @@ preText_score_plot(preText_results)
 ```
 
 The preText results suggest that this corpus is somewhat sensitive to preprocessing choices. The scores are not clustered very close to zero, and instead vary across a noticeable range, indicating that different preprocessing combinations can change document relationships to a meaningful extent. At the same time, the results are not completely erratic, since the scores form a fairly structured pattern. Overall, it suggests that preprocessing matters for this corpus, so the topic-model results should be interpreted with some caution, although the broad distinction between the two novels still appears robust.
-
